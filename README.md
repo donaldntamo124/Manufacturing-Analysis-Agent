@@ -9,7 +9,7 @@ A portfolio-ready GenAI agent application for analyzing manufacturing Excel file
 - **Multi-Provider LLM Support** - Works with OpenAI, Anthropic (Claude), or local Ollama models
 - **Manufacturing Insights** - Bottleneck detection, cycle time analysis, delayed job identification
 - **Excel Report Generation** - Export detailed analysis results as professional Excel reports
-- **Desktop GUI** - Traditional window-based interface using PySimpleGUI
+- **Web UI** - Browser-based interface using Streamlit, works in Docker and dev containers
 
 ## Quick Start
 
@@ -44,10 +44,10 @@ A portfolio-ready GenAI agent application for analyzing manufacturing Excel file
 
 5. **Run the application:**
    ```bash
-   python gui_app.py
+   streamlit run app.py
    ```
 
-A desktop window will open with the application interface.
+Opens in your browser at http://localhost:8501
 
 ## Configuration
 
