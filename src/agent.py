@@ -6,7 +6,7 @@ Orchestrates tool calling for natural language queries against manufacturing dat
 import os
 import pandas as pd
 from typing import Dict, List, Any, Optional
-from langchain.agents import create_agent
+from langchain_classic.agents import create_react_agent, AgentExecutor
 from langchain_core.tools import Tool
 from langchain_core.prompts import PromptTemplate
 
@@ -59,10 +59,10 @@ def load_llm(provider: str = None):
         return ChatAnthropic(api_key=api_key, model=model, temperature=0.5)
     
     elif provider == "ollama":
-        from langchain_community.chat_models import ChatOllama
+        from langchain_ollama import ChatOllama
         base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         model = os.getenv("OLLAMA_MODEL", "llama2")
-        return ChatOllama(base_url=base_url, model=model, temperature=0.5)
+        return ChatOllama(base_url=base_url, model=model, temperature=0.5, num_ctx=2048)
     
     else:
         raise ValueError(f"Unsupported LLM provider: {provider}")
@@ -80,75 +80,61 @@ def _create_analysis_tools(df: pd.DataFrame) -> List[Tool]:
         List of Tool objects
     """
     
-    def _calculate_cycle_times_tool():
-        """Calculate cycle time (in minutes) for each job in the dataset."""
+    def _calculate_cycle_times_tool(_: str = "") -> str:
         result_df = calculate_cycle_times(df)
-        return {
+        return str({
             "status": "success",
             "message": f"Calculated cycle times for {len(result_df)} jobs",
             "data": result_df[["job_id", "process_step", "cycle_time_minutes"]].head(10).to_dict(orient="records")
-        }
-    
-    def _find_bottleneck_tool():
-        """Find the process step that is the bottleneck (longest average cycle time)."""
+        })
+
+    def _find_bottleneck_tool(_: str = "") -> str:
         result = find_bottleneck_process(df)
-        return {
+        return str({
             "status": "success",
             "bottleneck": result["bottleneck_process"],
             "avg_cycle_time_minutes": result["avg_cycle_time"],
             "details": result
-        }
-    
-    def _find_delayed_jobs_tool():
-        """Identify jobs that are delayed (completed after due date or marked as late)."""
+        })
+
+    def _find_delayed_jobs_tool(_: str = "") -> str:
         result_df = find_delayed_jobs(df)
         if len(result_df) == 0:
-            return {
-                "status": "success",
-                "message": "No delayed jobs found",
-                "delayed_count": 0
-            }
-        return {
+            return str({"status": "success", "message": "No delayed jobs found", "delayed_count": 0})
+        return str({
             "status": "success",
             "delayed_count": len(result_df),
             "data": result_df[["job_id", "process_step", "delay_reason"]].head(10).to_dict(orient="records")
-        }
-    
-    def _machine_summary_tool():
-        """Summarize job metrics and utilization by machine."""
+        })
+
+    def _machine_summary_tool(_: str = "") -> str:
         result = summarise_by_machine(df)
-        return {
+        return str({
             "status": "success",
             "total_machines": result["total_machines"],
             "top_machines": result["top_machines"][:5],
             "underutilized_machines": result["underutilized"][:5]
-        }
-    
-    def _process_summary_tool():
-        """Summarize job metrics and cycle times by process step."""
+        })
+
+    def _process_summary_tool(_: str = "") -> str:
         result = summarise_by_process(df)
-        return {
+        return str({
             "status": "success",
             "by_cycle_time": result["by_cycle_time"][:5],
             "by_job_volume": result["by_job_volume"][:5]
-        }
-    
-    def _wip_location_tool():
-        """Estimate where work-in-progress (WIP) is concentrated in the production floor."""
+        })
+
+    def _wip_location_tool(_: str = "") -> str:
         result = estimate_wip_location(df)
-        return {
+        return str({
             "status": "success",
             "high_wip_locations": result["high_wip_locations"],
             "rationale": result["rationale"]
-        }
-    
-    def _summary_statistics_tool():
-        """Generate high-level summary statistics of the manufacturing data."""
+        })
+
+    def _summary_statistics_tool(_: str = "") -> str:
         result = generate_summary_statistics(df)
-        return {
-            "status": "success",
-            "data": result
-        }
+        return str({"status": "success", "data": result})
     
     # Create Tool objects
     tools = [
@@ -225,37 +211,52 @@ def run_agent(
         # Create tools
         tools = _create_analysis_tools(df)
         
-        # Create system prompt
-        system_prompt = """You are an expert manufacturing analyst AI assistant.
-
-Your role is to help users analyze manufacturing data and answer questions about:
-- Production bottlenecks and cycle times
-- Delayed jobs and scheduling issues
-- Machine utilization and capacity
-- Work-in-progress (WIP) locations and inventory
-- Overall manufacturing performance metrics
-
-Use the available tools to extract insights from the data.
-When presenting findings, be specific with numbers and actionable insights.
-Always explain WHY something is a problem and WHAT could be done about it.
-
-Keep responses concise but informative. Format tables clearly.
-
-File: {file_path}
-Sheet: {sheet_name}
-Records analyzed: {len(df)}
-Mapped columns: {mapping}"""
-        
-        # Create prompt template using ReAct pattern
-        prompt = PromptTemplate.from_template(
-            system_prompt + "\n\nQuestion: {input}\n\nThought:"
+        # Pre-compute context as plain string (cannot use {len(df)} inside PromptTemplate)
+        context = (
+            f"File: {file_path} | Sheet: {sheet_name} | "
+            f"Records: {len(df)} | Columns: {list(mapping.keys())}"
         )
-        
-        # Create agent using ReAct - invoke directly
+
+        # ReAct prompt — requires {tools}, {tool_names}, {input}, {agent_scratchpad}
+        react_template = (
+            "You are an expert manufacturing analyst AI assistant.\n\n"
+            "Your role is to help users analyze manufacturing data and answer questions about:\n"
+            "- Production bottlenecks and cycle times\n"
+            "- Delayed jobs and scheduling issues\n"
+            "- Machine utilization and capacity\n"
+            "- Work-in-progress (WIP) locations and inventory\n"
+            "- Overall manufacturing performance metrics\n\n"
+            "Use the available tools to extract insights from the data.\n"
+            "Be specific with numbers and actionable insights.\n\n"
+            "Context: " + context + "\n\n"
+            "Tools available:\n{tools}\n\n"
+            "Use this format:\n"
+            "Question: the input question\n"
+            "Thought: think about what to do\n"
+            "Action: one of [{tool_names}]\n"
+            "Action Input: input to the action\n"
+            "Observation: result of the action\n"
+            "... (repeat Thought/Action/Observation as needed)\n"
+            "Thought: I now know the final answer\n"
+            "Final Answer: the final answer\n\n"
+            "Begin!\n\n"
+            "Question: {input}\n"
+            "Thought:{agent_scratchpad}"
+        )
+
+        prompt = PromptTemplate.from_template(react_template)
+
+        # Create agent and executor
         agent = create_react_agent(llm, tools, prompt)
-        
-        # Run agent by invoking the runnable directly
-        result = agent.invoke({"input": user_query})
+        agent_executor = AgentExecutor(
+            agent=agent,
+            tools=tools,
+            verbose=False,
+            handle_parsing_errors=True,
+            max_iterations=6,
+        )
+
+        result = agent_executor.invoke({"input": user_query})
         
         # Extract useful summary data if present
         summary_stats = None

@@ -6,10 +6,12 @@ pytz>=2023.3
 
 # LangChain and LLM providers
 langchain>=0.3.0
+langchain-classic>=1.0.0
 langchain-core>=0.1.0
 langchain-openai>=0.0.5
 langchain-anthropic>=0.1.0
 langchain-community>=0.3.0
+langchain-ollama>=0.1.0
 langgraph>=0.1.0
 
 # Fuzzy string matching for column name inference
